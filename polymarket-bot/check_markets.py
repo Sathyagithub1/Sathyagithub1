@@ -4,7 +4,8 @@ import urllib.request, json
 from datetime import datetime
 
 url = "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=500"
-with urllib.request.urlopen(url, timeout=15) as r:
+req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+with urllib.request.urlopen(req, timeout=15) as r:
     items = json.loads(r.read())
 
 items = items if isinstance(items, list) else items.get("data", [])

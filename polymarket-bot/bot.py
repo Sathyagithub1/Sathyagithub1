@@ -523,35 +523,44 @@ class Scanner:
             if not sym:
                 return None
 
+            # BTC/ETH market found — log every rejection reason
+            label = q[:60]
+
             if any(k in qu for k in ("ABOVE", "HIGHER", "OVER", "> ", "≥")):
                 direction = "ABOVE"
             elif any(k in qu for k in ("BELOW", "LOWER", "UNDER", "< ", "≤")):
                 direction = "BELOW"
             else:
+                self._log.debug(f"SKIP no direction: {label}")
                 return None
 
             nums = [float(n.replace(",", "")) for n in re.findall(r"[\d,]+(?:\.\d+)?", q)]
             lo, hi = (1_000, 1_000_000) if sym == "BTC" else (100, 100_000)
             strike = next((n for n in sorted(nums, reverse=True) if lo < n < hi), None)
             if strike is None:
+                self._log.debug(f"SKIP no strike: {label}")
                 return None
 
             end_str = m.get("endDate") or m.get("end_date_iso") or m.get("endDateIso", "")
             if not end_str:
+                self._log.debug(f"SKIP no expiry: {label}")
                 return None
             expiry = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
             now = datetime.now(expiry.tzinfo)
             mins = (expiry - now).total_seconds() / 60
-            if not (0 < mins <= 120):    # up to 2 hours
+            if not (0 < mins <= 120):
+                self._log.debug(f"SKIP expiry {mins:.0f}m: {label}")
                 return None
 
             tokens = m.get("tokens") or m.get("clob_token_ids") or []
             if not tokens:
+                self._log.debug(f"SKIP no tokens: {label}")
                 return None
             tid = tokens[0] if isinstance(tokens[0], str) else tokens[0].get("token_id", "")
 
             vol = float(m.get("liquidity") or m.get("volume") or m.get("volumeNum") or 0)
             if vol < MIN_LIQUIDITY:
+                self._log.debug(f"SKIP low liq ${vol}: {label}")
                 return None
 
             bid = float(m.get("bestBid") or m.get("best_bid") or 0)
