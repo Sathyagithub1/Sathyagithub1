@@ -536,7 +536,7 @@ class Scanner:
             if strike is None:
                 return None
 
-            end_str = m.get("end_date_iso") or m.get("endDateIso", "")
+            end_str = m.get("endDate") or m.get("end_date_iso") or m.get("endDateIso", "")
             if not end_str:
                 return None
             expiry = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
@@ -550,7 +550,7 @@ class Scanner:
                 return None
             tid = tokens[0] if isinstance(tokens[0], str) else tokens[0].get("token_id", "")
 
-            vol = float(m.get("volume") or m.get("volumeNum") or 0)
+            vol = float(m.get("liquidity") or m.get("volume") or m.get("volumeNum") or 0)
             if vol < MIN_LIQUIDITY:
                 return None
 
@@ -558,7 +558,7 @@ class Scanner:
             ask = float(m.get("bestAsk") or m.get("best_ask") or 1)
 
             return Market(
-                market_id=m.get("condition_id") or m.get("id", ""),
+                market_id=m.get("conditionId") or m.get("condition_id") or m.get("id", ""),
                 token_id=tid,
                 question=q,
                 symbol=sym,
@@ -598,7 +598,7 @@ class Scanner:
             s = await self._s()
             async with s.get(
                 f"{POLY_GAMMA}/markets",
-                params={"active": "true", "closed": "false", "limit": 500, "tag_slug": "crypto"},
+                params={"active": "true", "closed": "false", "limit": 500},
             ) as r:
                 if r.status != 200:
                     self._log.warning(f"Gamma API {r.status}")
