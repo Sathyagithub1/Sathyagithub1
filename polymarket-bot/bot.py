@@ -519,7 +519,7 @@ class Scanner:
             q = m.get("question", "")
             qu = q.upper()
 
-            sym = next((s for s in SYMBOLS if s in qu), None)
+            sym = next((s for s in SYMBOLS if re.search(rf'\b{s}\b', qu)), None)
             if not sym:
                 return None
 
@@ -548,7 +548,7 @@ class Scanner:
             expiry = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
             now = datetime.now(expiry.tzinfo)
             mins = (expiry - now).total_seconds() / 60
-            if not (0 < mins <= 120):
+            if not (0 < mins <= 44640):   # up to 31 days
                 self._log.debug(f"SKIP expiry {mins:.0f}m: {label}")
                 return None
 
