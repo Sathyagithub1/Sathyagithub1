@@ -33,7 +33,7 @@ POLY_CLOB   = "https://clob.polymarket.com"
 POLY_GAMMA  = "https://gamma-api.polymarket.com"
 
 SYMBOLS               = ["BTC", "ETH"]
-MIN_LIQUIDITY         = 50_000        # USDC
+MIN_LIQUIDITY         = 5_000         # USDC (lowered for paper mode discovery)
 MAX_MARKETS           = 20
 STALE_SECONDS         = 10
 MIN_DETECTABLE_EDGE   = 0.05          # 5 %
@@ -542,7 +542,7 @@ class Scanner:
             expiry = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
             now = datetime.now(expiry.tzinfo)
             mins = (expiry - now).total_seconds() / 60
-            if not (0 < mins <= 20):
+            if not (0 < mins <= 120):    # up to 2 hours
                 return None
 
             tokens = m.get("tokens") or m.get("clob_token_ids") or []
@@ -606,6 +606,7 @@ class Scanner:
                 raw = await r.json()
 
             items = raw if isinstance(raw, list) else raw.get("data", [])
+            self._log.info(f"API returned {len(items)} raw markets")
             markets: List[Market] = []
             for m in items:
                 parsed = self._parse(m)
