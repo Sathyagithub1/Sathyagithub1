@@ -14,22 +14,17 @@ import time
 import logging
 import argparse
 import sqlite3
-import os
 import sys
 import math
 import hmac
 import hashlib
 import re
 import signal
+import getpass
 from datetime import datetime, date
 from logging.handlers import RotatingFileHandler
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
-from concurrent.futures import ThreadPoolExecutor
-
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -53,6 +48,89 @@ WS_MAX_RETRIES        = 10
 
 # Annualised volatility for Black-Scholes fair-value calculation
 VOL = {"BTC": 0.80, "ETH": 1.00}
+
+
+# ─── Credentials (in-memory only, never stored) ───────────────────────────────
+
+@dataclass
+class Credentials:
+    api_key:        str
+    api_secret:     str
+    api_passphrase: str
+    private_key:    str
+    alchemy_rpc:    str
+    tg_token:       str
+    tg_chat_id:     str
+
+
+def collect_credentials(live: bool) -> Credentials:
+    """
+    Prompt for all credentials interactively using getpass (no echo).
+    Values are held only in process memory and never written to disk.
+    """
+    print("\n─── Credential input (hidden, never stored) ─────────────────")
+    if not live:
+        print("Paper mode: only Telegram credentials are needed.")
+        print("Press Enter to skip Telegram (alerts will be logged locally).\n")
+
+    def ask(prompt: str, required: bool = False) -> str:
+        while True:
+            val = getpass.getpass(f"  {prompt}: ").strip()
+            if val or not required:
+                return val
+            print("  (required — please enter a value)")
+
+    tg_token   = ask("Telegram bot token  (blank = skip alerts)")
+    tg_chat_id = ask("Telegram chat ID    (blank = skip alerts)")
+
+    if not live:
+        print("─────────────────────────────────────────────────────────────\n")
+        return Credentials("", "", "", "", "", tg_token, tg_chat_id)
+
+    print()
+    api_key        = ask("Polymarket API key",        required=True)
+    api_secret     = ask("Polymarket API secret",     required=True)
+    api_passphrase = ask("Polymarket API passphrase", required=True)
+    private_key    = ask("Wallet private key (0x…)",  required=True)
+    alchemy_rpc    = ask("Alchemy RPC URL",            required=True)
+
+    print("─────────────────────────────────────────────────────────────")
+    print("✓ Credentials loaded into memory. Not written anywhere.\n")
+
+    return Credentials(
+        api_key=api_key,
+        api_secret=api_secret,
+        api_passphrase=api_passphrase,
+        private_key=private_key,
+        alchemy_rpc=alchemy_rpc,
+        tg_token=tg_token,
+        tg_chat_id=tg_chat_id,
+    )
+
+
+class _CredentialScrubber(logging.Filter):
+    """
+    Log filter that replaces any credential string with '***'.
+    Attached after credentials are collected so secrets can never
+    appear in bot.log even if accidentally referenced in a log call.
+    """
+    def __init__(self):
+        super().__init__()
+        self._secrets: List[str] = []
+
+    def register(self, *values: str):
+        self._secrets.extend(v for v in values if v)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        for s in self._secrets:
+            if s and s in msg:
+                record.msg  = record.msg.replace(s, "***")
+                record.args = ()
+        return True
+
+
+_scrubber = _CredentialScrubber()
 
 
 # ─── Data classes ─────────────────────────────────────────────────────────────
@@ -104,6 +182,7 @@ class Trade:
 def setup_logging() -> None:
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
+    root.addFilter(_scrubber)          # scrub secrets from every handler
 
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
@@ -121,10 +200,10 @@ def setup_logging() -> None:
 # ─── Telegram ─────────────────────────────────────────────────────────────────
 
 class Telegram:
-    def __init__(self):
-        self.token   = os.getenv("TELEGRAM_TOKEN", "")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-        self.enabled = bool(self.token and self.chat_id)
+    def __init__(self, token: str, chat_id: str):
+        self.token   = token
+        self.chat_id = chat_id
+        self.enabled = bool(token and chat_id)
         self._session: Optional[aiohttp.ClientSession] = None
         self._log = logging.getLogger("telegram")
 
@@ -554,7 +633,7 @@ class Scanner:
 # ─── Trade executor ───────────────────────────────────────────────────────────
 
 class Executor:
-    def __init__(self, paper: bool, db: DB, tg: Telegram):
+    def __init__(self, paper: bool, db: DB, tg: Telegram, creds: Credentials):
         self.paper        = paper
         self.db           = db
         self.tg           = tg
@@ -562,9 +641,9 @@ class Executor:
         self._sess: Optional[aiohttp.ClientSession] = None
         self._log = logging.getLogger("executor")
 
-        self._api_key        = os.getenv("POLY_API_KEY", "")
-        self._api_secret     = os.getenv("POLY_API_SECRET", "")
-        self._api_passphrase = os.getenv("POLY_API_PASSPHRASE", "")
+        self._api_key        = creds.api_key
+        self._api_secret     = creds.api_secret
+        self._api_passphrase = creds.api_passphrase
 
     async def _s(self) -> aiohttp.ClientSession:
         if self._sess is None or self._sess.closed:
@@ -669,17 +748,17 @@ class Executor:
 # ─── Bot orchestrator ─────────────────────────────────────────────────────────
 
 class ArbitrageBot:
-    def __init__(self, live: bool, balance: float):
+    def __init__(self, live: bool, balance: float, creds: Credentials):
         self.paper   = not live
         self._log    = logging.getLogger("bot")
-        self.tg      = Telegram()
+        self.tg      = Telegram(creds.tg_token, creds.tg_chat_id)
         self.db      = DB()
         self.feed    = PriceFeed()
         self.scanner = Scanner()
-        self.exec    = Executor(self.paper, self.db, self.tg)
+        self.exec    = Executor(self.paper, self.db, self.tg, creds)
         self.risk    = RiskManager(self.tg, self.db, balance)
         self._running        = False
-        self._traded: set    = set()     # market_ids traded this session
+        self._traded: set    = set()
         self._last_day: Optional[date] = None
 
     async def run(self):
@@ -796,9 +875,9 @@ def parse_args() -> argparse.Namespace:
 
 async def main():
     setup_logging()
-    args  = parse_args()
-    log   = logging.getLogger("main")
-    live  = args.live and args.confirm and args.risks
+    args = parse_args()
+    log  = logging.getLogger("main")
+    live = args.live and args.confirm and args.risks
 
     if args.live and not live:
         log.error("Live trading requires ALL three flags:\n"
@@ -806,12 +885,6 @@ async def main():
         sys.exit(1)
 
     if live:
-        missing = [v for v in ("POLY_API_KEY", "POLY_PRIVATE_KEY",
-                               "POLY_API_SECRET", "POLY_API_PASSPHRASE",
-                               "ALCHEMY_RPC_URL") if not os.getenv(v)]
-        if missing:
-            log.error(f"Missing env vars for live trading: {missing}")
-            sys.exit(1)
         log.warning("=" * 60)
         log.warning("  LIVE TRADING — REAL MONEY AT RISK")
         log.warning("=" * 60)
@@ -820,7 +893,18 @@ async def main():
         log.info("  PAPER TRADING MODE  (no real money)")
         log.info("=" * 60)
 
-    bot  = ArbitrageBot(live=live, balance=args.balance)
+    # Collect credentials interactively — never written to disk
+    creds = collect_credentials(live)
+
+    # Register every secret value with the log scrubber so they can
+    # never appear in bot.log even if accidentally referenced in a log call
+    _scrubber.register(
+        creds.api_key, creds.api_secret, creds.api_passphrase,
+        creds.private_key, creds.alchemy_rpc,
+        creds.tg_token, creds.tg_chat_id,
+    )
+
+    bot  = ArbitrageBot(live=live, balance=args.balance, creds=creds)
     loop = asyncio.get_event_loop()
 
     def _shutdown(*_):
